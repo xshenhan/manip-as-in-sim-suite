@@ -27,6 +27,8 @@ Supported ViT encoder sizes:
 - `vitl`: Large (256 features, 1024 output channels)
 - `vitg`: Giant (384 features, 1536 output channels)
 
+All pretrained models we provide are based on `vitl`.
+
 ## Installation
 
 ```bash
