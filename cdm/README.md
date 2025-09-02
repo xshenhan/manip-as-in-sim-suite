@@ -9,9 +9,8 @@ Camera Depth Models (CDMs) are sensor-specific depth models trained to produce c
 ### Key Features
 
 - **Metric Depth Estimation**: Produces accurate absolute depth measurements in meters
-- **Multi-Camera Support**: Optimized models for various depth sensors (RealSense D435/D455/L515, ZED 2i, Azure Kinect)  
+- **Multi-Camera Support**: Optimized models for various depth sensors (RealSense D405/D435/L515, ZED 2i, Azure Kinect)  
 - **Real-time Performance**: Lightweight inference for smooth robot control
-- **Plug-and-Play**: Simple integration into existing robot pipelines
 - **Sim-to-Real Ready**: Generates simulation-quality depth from real camera data
 
 ## Architecture
@@ -48,7 +47,7 @@ python infer.py \
     --output visualization.png
 ```
 
-> We provide the example image and depth in the `cdm/input_data` folder. And the model can be downloaded from [here](https://huggingface.co/collections/depth-anything/camera-depth-models-68b521181dedd223f4b020db).
+> We provide the example image and depth in the `cdm/input_data` folder. And the available models can be downloaded from [here](https://huggingface.co/collections/depth-anything/camera-depth-models-68b521181dedd223f4b020db).
 ### Command Line Arguments
 
 - `--encoder`: Model size (`vits`, `vitb`, `vitl`, `vitg`) - default: `vitl`
@@ -96,9 +95,9 @@ Training datasets: HyperSim, DREDS, HISS, IRS (280,000+ images total)
 
 ## Supported Cameras
 
-Pre-trained models available for:
-- Intel RealSense D405/D415/D435/D455/L515
-- Stereolabs ZED 2i (4 modes: Performance, Ultra, Quality, Neural)
+We currently provide pre-trained models available for:
+- Intel RealSense D405/D435/L515
+- Stereolabs ZED 2i (2 modes: Quality, Neural)
 - Microsoft Azure Kinect
 
 ## File Structure
