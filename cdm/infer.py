@@ -8,6 +8,7 @@ import sys
 
 import cv2
 import matplotlib.pyplot as plt
+import matplotlib
 import numpy as np
 import torch
 from PIL import Image
@@ -173,6 +174,12 @@ def parse_arguments():
     parser.add_argument(
         "--max-depth", type=float, default=6.0, help="Maximum valid depth value"
     )
+    parser.add_argument(
+        "--image-min", type=float, default=0.1, help="Minimum valid depth value"
+    )
+    parser.add_argument(
+        "--image-max", type=float, default=5.0, help="Maximum valid depth value"
+    )
     return parser.parse_args()
 
 
@@ -278,7 +285,38 @@ def load_images(rgb_path, depth_path, depth_scale, max_depth):
     return rgb_src, depth_low_res, simi_depth_low_res
 
 
-def create_visualization(rgb_src, depth_rs, simi_depth, pred):
+def colorize_depth_maps(
+    depth_map, min_depth, max_depth, cmap="Spectral", valid_mask=None
+):
+    """
+    Colorize depth maps.
+    """
+    assert len(depth_map.shape) >= 2, "Invalid dimension"
+
+    if isinstance(depth_map, np.ndarray):
+        depth = depth_map.copy().squeeze()
+    # reshape to [ (B,) H, W ]
+    if depth.ndim < 3:
+        depth = depth[np.newaxis, :, :]
+
+    # colorize
+    cm_func = matplotlib.colormaps[cmap]
+    depth = ((depth - min_depth) / (max_depth - min_depth)).clip(0, 1)
+    img_colored_np = cm_func(depth, bytes=False)[:, :, :, 0:3]  # value from 0 to 1
+    img_colored_np = np.rollaxis(img_colored_np, 3, 1)
+
+    if valid_mask is not None:
+        valid_mask = valid_mask.squeeze()  # [H, W] or [B, H, W]
+        if valid_mask.ndim < 3:
+            valid_mask = valid_mask[np.newaxis, np.newaxis, :, :]
+        else:
+            valid_mask = valid_mask[:, np.newaxis, :, :]
+        valid_mask = np.repeat(valid_mask, 3, axis=1)
+        img_colored_np[~valid_mask] = 0
+
+    return img_colored_np
+
+def create_visualization(rgb_src, depth_rs, simi_depth, pred, image_min, image_max):
     """Create a 2x2 grid visualization comparing input and predicted depth.
 
     Args:
@@ -294,27 +332,39 @@ def create_visualization(rgb_src, depth_rs, simi_depth, pred):
             - Bottom-left: Predicted depth (colorized)
             - Bottom-right: Relative error map (colorized)
     """
-    # Colorize predicted depth
-    depth_pred_abs_col = colorize(pred, vmin=1.0, vmax=15.0, cmap="Spectral")
-    depth_pred_abs_col = (depth_pred_abs_col * 255).astype(np.uint8)
-    depth_pred_abs_col = cv2.cvtColor(depth_pred_abs_col, cv2.COLOR_RGB2BGR)
-
-    # Convert similarity depth back to regular depth for visualization
-    depth_low_res_col = colorize(depth_rs, vmin=1.0, vmax=15.0, cmap="Spectral")
-    depth_low_res_col = (depth_low_res_col * 255).astype(np.uint8)
-    depth_low_res_col = cv2.cvtColor(depth_low_res_col, cv2.COLOR_RGB2BGR)
-
-    # Calculate relative error between ground truth and prediction
-    depth_arel_abs = np.zeros_like(depth_rs)
-    valid = depth_rs > 0  # Only compute error for valid depth pixels
-    depth_arel_abs[valid] = np.abs(depth_rs[valid] - pred[valid]) / depth_rs[valid]
-    depth_error_abs_col = colorize(depth_arel_abs, vmin=0.0, vmax=0.2, cmap="coolwarm")
-    depth_arel_abs = (depth_arel_abs * 255).astype(np.uint8)
-    depth_arel_abs = cv2.cvtColor(depth_arel_abs, cv2.COLOR_RGB2BGR)
-
-    # Arrange all visualizations in a 2x2 grid
+    # 将RGB图像转换为BGR格式以便显示
+    rgb_display = cv2.cvtColor(rgb_src, cv2.COLOR_RGB2BGR)
+    
+    # 使用colorize_depth_maps函数为深度图着色
+    # 预测深度图着色
+    pred_colored = colorize_depth_maps(
+        pred, min_depth=image_min, max_depth=image_max, cmap="Spectral"
+    )
+    pred_colored = np.rollaxis(pred_colored[0], 0, 3)  # 从[C,H,W]转换为[H,W,C]
+    pred_colored = (pred_colored * 255).astype(np.uint8)
+    
+    # 真实深度图着色
+    depth_colored = colorize_depth_maps(
+        depth_rs, min_depth=image_min, max_depth=image_max, cmap="Spectral"
+    )
+    depth_colored = np.rollaxis(depth_colored[0], 0, 3)  # 从[C,H,W]转换为[H,W,C]
+    depth_colored = (depth_colored * 255).astype(np.uint8)
+    
+    # 计算相对误差
+    depth_error = np.zeros_like(depth_rs)
+    valid = depth_rs > 0  # 只计算有效深度像素的误差
+    depth_error[valid] = np.abs(depth_rs[valid] - pred[valid]) / depth_rs[valid]
+    
+    # 误差图着色
+    error_colored = colorize_depth_maps(
+        depth_error, min_depth=0, max_depth=0.5, cmap="coolwarm"
+    )
+    error_colored = np.rollaxis(error_colored[0], 0, 3)  # 从[C,H,W]转换为[H,W,C]
+    error_colored = (error_colored * 255).astype(np.uint8)
+    
+    # 排列所有可视化结果为2x2网格
     return image_grid(
-        [rgb_src, depth_low_res_col, depth_pred_abs_col, depth_error_abs_col], 2, 2
+        [rgb_display, depth_colored, pred_colored, error_colored], 2, 2
     )
 
 
@@ -345,7 +395,9 @@ def inference(args):
     pred = 1 / pred
 
     # Create visualization comparing input, prediction, and error
-    artifact = create_visualization(rgb_src, depth_low_res, simi_depth_low_res, pred)
+    image_min = args.image_min
+    image_max = args.image_max
+    artifact = create_visualization(rgb_src, depth_low_res, simi_depth_low_res, pred, image_min, image_max)
 
     # Save the visualization
     Image.fromarray(artifact).save(args.output)
