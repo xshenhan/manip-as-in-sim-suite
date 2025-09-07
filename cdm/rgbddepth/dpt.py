@@ -245,15 +245,13 @@ class RGBDDepth(nn.Module):
         )
 
     def forward(self, x):
-        rgb, depth = x[:, :3], x[:, 3:, :, :]
+        rgb, depth = x[:, :3], x[:, 3:]
         patch_h, patch_w = x.shape[-2] // 14, x.shape[-1] // 14
 
         with torch.no_grad():
             features_rgb = self.pretrained.get_intermediate_layers(
                 rgb, self.intermediate_layer_idx[self.encoder], return_class_token=True
             )
-            # depth_relative = self.depth_head(features_rgb, patch_h, patch_w)
-            # depth_relative = F.relu(depth_relative)
 
         features_depth = self.depth_pretrained.get_intermediate_layers(
             depth.repeat(1, 3, 1, 1),
@@ -277,22 +275,14 @@ class RGBDDepth(nn.Module):
             features.append(tuples)
         depth = self.depth_head_rgbd(features, patch_h, patch_w)
         depth = F.relu(depth)
-
-        # return depth.squeeze(1), depth_relative.squeeze(1)
         return depth.squeeze(1)
 
     @torch.no_grad()
-    def infer_image(self, raw_image, depth, input_size=518):
-        inputs, (h, w) = self.image2tensor(raw_image, depth, input_size)
-
-        # depth, depth_rel = self.forward(inputs)
-        depth = self.forward(inputs)
-
-        depth = F.interpolate(depth[:, None], (h, w), mode="nearest")[0, 0]
-        # depth_rel = F.interpolate(depth_rel[:, None], (h, w), mode="bilinear", align_corners=True)[0, 0]
-
-        # return depth.cpu().numpy(), depth_rel.cpu().numpy()
-        return depth.cpu().numpy()
+    def infer_image(self, raw_image, depth_low_res, input_size=518):
+        inputs, (h, w) = self.image2tensor(raw_image, depth_low_res, input_size)
+        pred_depth = self.forward(inputs)
+        pred_depth = F.interpolate(pred_depth[:, None], (h, w), mode="nearest")[0, 0]
+        return pred_depth.cpu().numpy()
 
     def image2tensor(self, raw_image, depth, input_size=518):
         transform = Compose(

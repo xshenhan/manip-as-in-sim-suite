@@ -47,7 +47,7 @@ model_configs = {
 }
 
 
-def colorize(value, vmin=None, vmax=None, cmap="magma_r"):
+def colorize(value, vmin=None, vmax=None, cmap="Spectral"):
     """Convert depth values to colorized visualization.
 
     Args:
@@ -71,7 +71,7 @@ def colorize(value, vmin=None, vmax=None, cmap="magma_r"):
     # Normalize values to [0, 1] range
     vmin = value.min() if vmin is None else vmin
     vmax = value.max() if vmax is None else vmax
-    value = (value - vmin) / (vmax - vmin)
+    value = ((value - vmin) / (vmax - vmin)).clip(0, 1)
 
     # Apply colormap to create colored visualization
     cmapper = plt.get_cmap(cmap)
@@ -225,6 +225,9 @@ def load_model(encoder, model_path):
         # Handle checkpoints that wrap state dict in 'model' key
         # Remove 'module.' prefix if present (from DataParallel training)
         states = {k[7:]: v for k, v in checkpoint["model"].items()}
+    elif "state_dict" in checkpoint:
+        states = checkpoint["state_dict"]
+        states = {k[9:]: v for k, v in states.items()}
     else:
         # Direct state dict checkpoint
         states = checkpoint
@@ -247,32 +250,32 @@ def load_images(rgb_path, depth_path, depth_scale, max_depth):
         max_depth: Maximum valid depth value (values above this are set to 0)
 
     Returns:
-        tuple: (rgb_image, depth_image, similarity_depth)
+        tuple: (rgb_image, depth_low_res, similarity_depth_low_res)
             - rgb_image: RGB image in numpy array format (BGR -> RGB)
-            - depth_image: Depth values in meters
-            - similarity_depth: Inverse depth values (1/depth) for model input
+            - depth_low_res: Depth values in meters
+            - similarity_depth_low_res: Inverse depth values (1/depth) for model input
     """
     # Load RGB image and convert from BGR to RGB
-    rgb_src = cv2.imread(rgb_path)[:, :, ::-1]
+    rgb_src = np.asarray(cv2.imread(rgb_path)[:, :, ::-1])
     if rgb_src is None:
         raise ValueError(f"Could not load RGB image from {rgb_path}")
 
     # Load depth image (usually 16-bit)
-    depth_rs = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
-    if depth_rs is None:
+    depth_low_res = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
+    if depth_low_res is None:
         raise ValueError(f"Could not load depth image from {depth_path}")
 
     # Convert depth to meters and clamp invalid values
-    depth_rs = depth_rs.astype(float) / depth_scale
-    depth_rs[depth_rs > max_depth] = 0.0  # Remove values beyond max range
+    depth_low_res = np.asarray(depth_low_res).astype(np.float32) / depth_scale
+    depth_low_res[depth_low_res > max_depth] = 0.0  # Remove values beyond max range
 
     # Create similarity depth (inverse depth) for model input
     # Only compute inverse for valid depth values
-    simi_depth = np.zeros_like(depth_rs)
-    simi_depth[depth_rs > 0] = 1 / depth_rs[depth_rs > 0]
+    simi_depth_low_res = np.zeros_like(depth_low_res)
+    simi_depth_low_res[depth_low_res > 0] = 1 / depth_low_res[depth_low_res > 0]
 
-    print(f"Images loaded: RGB {rgb_src.shape}, Depth {depth_rs.shape}")
-    return rgb_src, depth_rs, simi_depth
+    print(f"Images loaded: RGB {rgb_src.shape}, Depth {depth_low_res.shape}")
+    return rgb_src, depth_low_res, simi_depth_low_res
 
 
 def create_visualization(rgb_src, depth_rs, simi_depth, pred):
@@ -292,22 +295,26 @@ def create_visualization(rgb_src, depth_rs, simi_depth, pred):
             - Bottom-right: Relative error map (colorized)
     """
     # Colorize predicted depth
-    depth_pred_abs_col = colorize(pred, vmin=0.01, vmax=6.0, cmap="magma_r")
+    depth_pred_abs_col = colorize(pred, vmin=1.0, vmax=15.0, cmap="Spectral")
+    depth_pred_abs_col = (depth_pred_abs_col * 255).astype(np.uint8)
+    depth_pred_abs_col = cv2.cvtColor(depth_pred_abs_col, cv2.COLOR_RGB2BGR)
 
     # Convert similarity depth back to regular depth for visualization
-    show_src_depth = np.zeros_like(simi_depth)
-    show_src_depth[simi_depth > 0] = 1 / simi_depth[simi_depth > 0]
-    depth_rs_col = colorize(show_src_depth, vmin=0.01, vmax=6.0, cmap="magma_r")
+    depth_low_res_col = colorize(depth_rs, vmin=1.0, vmax=15.0, cmap="Spectral")
+    depth_low_res_col = (depth_low_res_col * 255).astype(np.uint8)
+    depth_low_res_col = cv2.cvtColor(depth_low_res_col, cv2.COLOR_RGB2BGR)
 
     # Calculate relative error between ground truth and prediction
     depth_arel_abs = np.zeros_like(depth_rs)
     valid = depth_rs > 0  # Only compute error for valid depth pixels
     depth_arel_abs[valid] = np.abs(depth_rs[valid] - pred[valid]) / depth_rs[valid]
     depth_error_abs_col = colorize(depth_arel_abs, vmin=0.0, vmax=0.2, cmap="coolwarm")
+    depth_arel_abs = (depth_arel_abs * 255).astype(np.uint8)
+    depth_arel_abs = cv2.cvtColor(depth_arel_abs, cv2.COLOR_RGB2BGR)
 
     # Arrange all visualizations in a 2x2 grid
     return image_grid(
-        [rgb_src, depth_rs_col, depth_pred_abs_col, depth_error_abs_col], 2, 2
+        [rgb_src, depth_low_res_col, depth_pred_abs_col, depth_error_abs_col], 2, 2
     )
 
 
@@ -324,12 +331,12 @@ def inference(args):
     model = load_model(args.encoder, args.model_path)
 
     # Load and preprocess input images
-    rgb_src, depth_rs, simi_depth = load_images(
-        args.rgb_image, args.depth_image, args.depth_scale, args.max_depth
+    rgb_src, depth_low_res, simi_depth_low_res = load_images(
+        args.rgb_image, args.depth_image, args.depth_scale, 25.0
     )
 
     # Run model inference
-    pred = model.infer_image(rgb_src, simi_depth, input_size=args.input_size)
+    pred = model.infer_image(rgb_src, simi_depth_low_res, input_size=args.input_size)
     print(
         f"Prediction info: shape={pred.shape}, min={pred.min():.4f}, max={pred.max():.4f}"
     )
@@ -338,7 +345,7 @@ def inference(args):
     pred = 1 / pred
 
     # Create visualization comparing input, prediction, and error
-    artifact = create_visualization(rgb_src, depth_rs, simi_depth, pred)
+    artifact = create_visualization(rgb_src, depth_low_res, simi_depth_low_res, pred)
 
     # Save the visualization
     Image.fromarray(artifact).save(args.output)
