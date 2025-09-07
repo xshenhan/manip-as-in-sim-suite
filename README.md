@@ -253,6 +253,8 @@ python infer.py \
     --output result.png
 ```
 
+- We provide one example RGB and depth image in the `cdm/example_data` directory along with inference result from [the D435 camera model](https://huggingface.co/depth-anything/camera-depth-model-d435). You can use these sample data to quickly test CDM functionality.
+
 ### WBCMimic Usage
 
 Generate manipulation demonstrations using the three-step workflow:

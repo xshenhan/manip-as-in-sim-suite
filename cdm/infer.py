@@ -316,6 +316,7 @@ def colorize_depth_maps(
 
     return img_colored_np
 
+
 def create_visualization(rgb_src, depth_rs, simi_depth, pred, image_min, image_max):
     """Create a 2x2 grid visualization comparing input and predicted depth.
 
@@ -334,7 +335,7 @@ def create_visualization(rgb_src, depth_rs, simi_depth, pred, image_min, image_m
     """
     # 将RGB图像转换为BGR格式以便显示
     rgb_display = cv2.cvtColor(rgb_src, cv2.COLOR_RGB2BGR)
-    
+
     # 使用colorize_depth_maps函数为深度图着色
     # 预测深度图着色
     pred_colored = colorize_depth_maps(
@@ -342,30 +343,28 @@ def create_visualization(rgb_src, depth_rs, simi_depth, pred, image_min, image_m
     )
     pred_colored = np.rollaxis(pred_colored[0], 0, 3)  # 从[C,H,W]转换为[H,W,C]
     pred_colored = (pred_colored * 255).astype(np.uint8)
-    
+
     # 真实深度图着色
     depth_colored = colorize_depth_maps(
         depth_rs, min_depth=image_min, max_depth=image_max, cmap="Spectral"
     )
     depth_colored = np.rollaxis(depth_colored[0], 0, 3)  # 从[C,H,W]转换为[H,W,C]
     depth_colored = (depth_colored * 255).astype(np.uint8)
-    
+
     # 计算相对误差
     depth_error = np.zeros_like(depth_rs)
     valid = depth_rs > 0  # 只计算有效深度像素的误差
     depth_error[valid] = np.abs(depth_rs[valid] - pred[valid]) / depth_rs[valid]
-    
+
     # 误差图着色
     error_colored = colorize_depth_maps(
         depth_error, min_depth=0, max_depth=0.5, cmap="coolwarm"
     )
     error_colored = np.rollaxis(error_colored[0], 0, 3)  # 从[C,H,W]转换为[H,W,C]
     error_colored = (error_colored * 255).astype(np.uint8)
-    
+
     # 排列所有可视化结果为2x2网格
-    return image_grid(
-        [rgb_display, depth_colored, pred_colored, error_colored], 2, 2
-    )
+    return image_grid([rgb_display, depth_colored, pred_colored, error_colored], 2, 2)
 
 
 def inference(args):
@@ -397,7 +396,9 @@ def inference(args):
     # Create visualization comparing input, prediction, and error
     image_min = args.image_min
     image_max = args.image_max
-    artifact = create_visualization(rgb_src, depth_low_res, simi_depth_low_res, pred, image_min, image_max)
+    artifact = create_visualization(
+        rgb_src, depth_low_res, simi_depth_low_res, pred, image_min, image_max
+    )
 
     # Save the visualization
     Image.fromarray(artifact).save(args.output)
