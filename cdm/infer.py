@@ -8,6 +8,7 @@ import sys
 
 import cv2
 import matplotlib.pyplot as plt
+import matplotlib
 import numpy as np
 import torch
 from PIL import Image
@@ -47,7 +48,7 @@ model_configs = {
 }
 
 
-def colorize(value, vmin=None, vmax=None, cmap="magma_r"):
+def colorize(value, vmin=None, vmax=None, cmap="Spectral"):
     """Convert depth values to colorized visualization.
 
     Args:
@@ -71,7 +72,7 @@ def colorize(value, vmin=None, vmax=None, cmap="magma_r"):
     # Normalize values to [0, 1] range
     vmin = value.min() if vmin is None else vmin
     vmax = value.max() if vmax is None else vmax
-    value = (value - vmin) / (vmax - vmin)
+    value = ((value - vmin) / (vmax - vmin)).clip(0, 1)
 
     # Apply colormap to create colored visualization
     cmapper = plt.get_cmap(cmap)
@@ -173,6 +174,12 @@ def parse_arguments():
     parser.add_argument(
         "--max-depth", type=float, default=6.0, help="Maximum valid depth value"
     )
+    parser.add_argument(
+        "--image-min", type=float, default=0.1, help="Minimum valid depth value"
+    )
+    parser.add_argument(
+        "--image-max", type=float, default=5.0, help="Maximum valid depth value"
+    )
     return parser.parse_args()
 
 
@@ -225,6 +232,9 @@ def load_model(encoder, model_path):
         # Handle checkpoints that wrap state dict in 'model' key
         # Remove 'module.' prefix if present (from DataParallel training)
         states = {k[7:]: v for k, v in checkpoint["model"].items()}
+    elif "state_dict" in checkpoint:
+        states = checkpoint["state_dict"]
+        states = {k[9:]: v for k, v in states.items()}
     else:
         # Direct state dict checkpoint
         states = checkpoint
@@ -247,35 +257,66 @@ def load_images(rgb_path, depth_path, depth_scale, max_depth):
         max_depth: Maximum valid depth value (values above this are set to 0)
 
     Returns:
-        tuple: (rgb_image, depth_image, similarity_depth)
+        tuple: (rgb_image, depth_low_res, similarity_depth_low_res)
             - rgb_image: RGB image in numpy array format (BGR -> RGB)
-            - depth_image: Depth values in meters
-            - similarity_depth: Inverse depth values (1/depth) for model input
+            - depth_low_res: Depth values in meters
+            - similarity_depth_low_res: Inverse depth values (1/depth) for model input
     """
     # Load RGB image and convert from BGR to RGB
-    rgb_src = cv2.imread(rgb_path)[:, :, ::-1]
+    rgb_src = np.asarray(cv2.imread(rgb_path)[:, :, ::-1])
     if rgb_src is None:
         raise ValueError(f"Could not load RGB image from {rgb_path}")
 
     # Load depth image (usually 16-bit)
-    depth_rs = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
-    if depth_rs is None:
+    depth_low_res = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
+    if depth_low_res is None:
         raise ValueError(f"Could not load depth image from {depth_path}")
 
     # Convert depth to meters and clamp invalid values
-    depth_rs = depth_rs.astype(float) / depth_scale
-    depth_rs[depth_rs > max_depth] = 0.0  # Remove values beyond max range
+    depth_low_res = np.asarray(depth_low_res).astype(np.float32) / depth_scale
+    depth_low_res[depth_low_res > max_depth] = 0.0  # Remove values beyond max range
 
     # Create similarity depth (inverse depth) for model input
     # Only compute inverse for valid depth values
-    simi_depth = np.zeros_like(depth_rs)
-    simi_depth[depth_rs > 0] = 1 / depth_rs[depth_rs > 0]
+    simi_depth_low_res = np.zeros_like(depth_low_res)
+    simi_depth_low_res[depth_low_res > 0] = 1 / depth_low_res[depth_low_res > 0]
 
-    print(f"Images loaded: RGB {rgb_src.shape}, Depth {depth_rs.shape}")
-    return rgb_src, depth_rs, simi_depth
+    print(f"Images loaded: RGB {rgb_src.shape}, Depth {depth_low_res.shape}")
+    return rgb_src, depth_low_res, simi_depth_low_res
 
 
-def create_visualization(rgb_src, depth_rs, simi_depth, pred):
+def colorize_depth_maps(
+    depth_map, min_depth, max_depth, cmap="Spectral", valid_mask=None
+):
+    """
+    Colorize depth maps.
+    """
+    assert len(depth_map.shape) >= 2, "Invalid dimension"
+
+    if isinstance(depth_map, np.ndarray):
+        depth = depth_map.copy().squeeze()
+    # reshape to [ (B,) H, W ]
+    if depth.ndim < 3:
+        depth = depth[np.newaxis, :, :]
+
+    # colorize
+    cm_func = matplotlib.colormaps[cmap]
+    depth = ((depth - min_depth) / (max_depth - min_depth)).clip(0, 1)
+    img_colored_np = cm_func(depth, bytes=False)[:, :, :, 0:3]  # value from 0 to 1
+    img_colored_np = np.rollaxis(img_colored_np, 3, 1)
+
+    if valid_mask is not None:
+        valid_mask = valid_mask.squeeze()  # [H, W] or [B, H, W]
+        if valid_mask.ndim < 3:
+            valid_mask = valid_mask[np.newaxis, np.newaxis, :, :]
+        else:
+            valid_mask = valid_mask[:, np.newaxis, :, :]
+        valid_mask = np.repeat(valid_mask, 3, axis=1)
+        img_colored_np[~valid_mask] = 0
+
+    return img_colored_np
+
+def create_visualization(rgb_src, depth_rs, simi_depth, pred, image_min, image_max):
     """Create a 2x2 grid visualization comparing input and predicted depth.
 
     Args:
@@ -291,24 +332,38 @@ def create_visualization(rgb_src, depth_rs, simi_depth, pred):
             - Bottom-left: Predicted depth (colorized)
             - Bottom-right: Relative error map (colorized)
     """
-    # Colorize predicted depth
-    depth_pred_abs_col = colorize(pred, vmin=0.01, vmax=6.0, cmap="magma_r")
+    # Convert RGB image to BGR format for display
+    rgb_display = cv2.cvtColor(rgb_src, cv2.COLOR_RGB2BGR)
 
-    # Convert similarity depth back to regular depth for visualization
-    show_src_depth = np.zeros_like(simi_depth)
-    show_src_depth[simi_depth > 0] = 1 / simi_depth[simi_depth > 0]
-    depth_rs_col = colorize(show_src_depth, vmin=0.01, vmax=6.0, cmap="magma_r")
+    # Use colorize_depth_maps function to colorize depth maps
+    # Colorize predicted depth map
+    pred_colored = colorize_depth_maps(
+        pred, min_depth=image_min, max_depth=image_max, cmap="Spectral"
+    )
+    pred_colored = np.rollaxis(pred_colored[0], 0, 3)  # Convert from [C,H,W] to [H,W,C]
+    pred_colored = (pred_colored * 255).astype(np.uint8)
 
-    # Calculate relative error between ground truth and prediction
-    depth_arel_abs = np.zeros_like(depth_rs)
-    valid = depth_rs > 0  # Only compute error for valid depth pixels
-    depth_arel_abs[valid] = np.abs(depth_rs[valid] - pred[valid]) / depth_rs[valid]
-    depth_error_abs_col = colorize(depth_arel_abs, vmin=0.0, vmax=0.2, cmap="coolwarm")
+    # Colorize ground truth depth map
+    depth_colored = colorize_depth_maps(
+        depth_rs, min_depth=image_min, max_depth=image_max, cmap="Spectral"
+    )
+    depth_colored = np.rollaxis(depth_colored[0], 0, 3)  # Convert from [C,H,W] to [H,W,C]
+    depth_colored = (depth_colored * 255).astype(np.uint8)
+
+    # Calculate relative error
+    depth_error = np.zeros_like(depth_rs)
+    valid = depth_rs > 0  # Only calculate error for valid depth pixels
+    depth_error[valid] = np.abs(depth_rs[valid] - pred[valid]) / depth_rs[valid]
+
+    # Colorize error map
+    error_colored = colorize_depth_maps(
+        depth_error, min_depth=0, max_depth=1, cmap="Spectral"
+    )
+    error_colored = np.rollaxis(error_colored[0], 0, 3)  # Convert from [C,H,W] to [H,W,C]
+    error_colored = (error_colored * 255).astype(np.uint8)
 
     # Arrange all visualizations in a 2x2 grid
-    return image_grid(
-        [rgb_src, depth_rs_col, depth_pred_abs_col, depth_error_abs_col], 2, 2
-    )
+    return image_grid([rgb_display, depth_colored, pred_colored, error_colored], 2, 2)
 
 
 def inference(args):
@@ -324,12 +379,12 @@ def inference(args):
     model = load_model(args.encoder, args.model_path)
 
     # Load and preprocess input images
-    rgb_src, depth_rs, simi_depth = load_images(
-        args.rgb_image, args.depth_image, args.depth_scale, args.max_depth
+    rgb_src, depth_low_res, simi_depth_low_res = load_images(
+        args.rgb_image, args.depth_image, args.depth_scale, 25.0
     )
 
     # Run model inference
-    pred = model.infer_image(rgb_src, simi_depth, input_size=args.input_size)
+    pred = model.infer_image(rgb_src, simi_depth_low_res, input_size=args.input_size)
     print(
         f"Prediction info: shape={pred.shape}, min={pred.min():.4f}, max={pred.max():.4f}"
     )
@@ -338,7 +393,11 @@ def inference(args):
     pred = 1 / pred
 
     # Create visualization comparing input, prediction, and error
-    artifact = create_visualization(rgb_src, depth_rs, simi_depth, pred)
+    image_min = args.image_min
+    image_max = args.image_max
+    artifact = create_visualization(
+        rgb_src, depth_low_res, simi_depth_low_res, pred, image_min, image_max
+    )
 
     # Save the visualization
     Image.fromarray(artifact).save(args.output)
