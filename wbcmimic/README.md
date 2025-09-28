@@ -28,19 +28,20 @@ WBCMimic is an enhanced version of [MimicGen](https://github.com/NVlabs/mimicgen
    ```bash
    # Download simulation assets from HuggingFace
    # Assets available at: https://huggingface.co/datasets/xshenhan/UniMimic
-   # Place assets in the appropriate source/ directory
+   # Place assets in the appropriate source/wbcmimic_assets directory
    
    # Expected directory structure:
    source/
-   ├── wbcmimic_assets/           # Simulation environment assets
-   │   ├── robots/             # Robot models (UR5, ARX-X7)
-   │   ├── objects/            # Manipulation objects
-   │   └── environments/       # Environment models
-   └── isaaclab_mimic/         # WBCMimic core package
-       ├── datagen/            # Data generation pipeline
-       ├── tasks/              # Task definitions
-       ├── envs/               # Environment configurations
-       └── utils/              # Utility functions including WBC
+   ├── wbcmimic_assets/                 # Simulation environment assets
+   │   ├── UR5/                      # Robot models (UR5, ARX-X7)
+   │   ├── objects/                     # Manipulation objects
+   │   └── environments/                # Environment models
+   │   └── ...                          
+   └── isaaclab_mimic/isaaclab_mimic/   # WBCMimic core package
+       ├── datagen/                     # Data generation pipeline
+       ├── tasks/                       # Task definitions
+       ├── envs/                        # Environment configurations
+       └── ...                          # Other files and directories
    ```
 
 4. **Install WBCMimic package**:
